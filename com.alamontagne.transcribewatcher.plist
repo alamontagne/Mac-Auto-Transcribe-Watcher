@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.alamontagne.transcribewatcher.plist
+  ───────────────────────────────────────
+  launchd agent that keeps watcher.py running at all times.
+  • Starts automatically when you log in (RunAtLoad)
+  • Restarts automatically if it crashes (KeepAlive)
+  • Logs stdout/stderr to the Trancscribe directory
+
+  Installation:
+    cp com.alamontagne.transcribewatcher.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.alamontagne.transcribewatcher.plist
+
+  To stop:
+    launchctl unload ~/Library/LaunchAgents/com.alamontagne.transcribewatcher.plist
+-->
+<plist version="1.0">
+<dict>
+
+    <!-- Unique identifier for this agent -->
+    <key>Label</key>
+    <string>com.alamontagne.transcribewatcher</string>
+
+    <!-- Command to run: python3 /path/to/watcher.py -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/alamontagne/Documents/Trancscribe/watcher.py</string>
+    </array>
+
+    <!-- Start the watcher as soon as you log in -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart automatically if the process exits or crashes -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Log normal output to a file in the watched directory -->
+    <key>StandardOutPath</key>
+    <string>/Users/alamontagne/Documents/Trancscribe/watcher.log</string>
+
+    <!-- Log errors to a separate file -->
+    <key>StandardErrorPath</key>
+    <string>/Users/alamontagne/Documents/Trancscribe/watcher.err</string>
+
+</dict>
+</plist>
