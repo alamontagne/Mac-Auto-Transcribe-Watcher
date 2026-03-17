@@ -1,6 +1,6 @@
 # 🎙️ Auto-Transcribe Watcher
 
-Automatically transcribes `.mp3` files the moment they finish syncing to a local iCloud-connected folder on your Mac — then notifies you on your iPhone via iMessage when transcription starts and again when it's done.
+Automatically transcribes `.mp3` files the moment they finish syncing to a local iCloud-connected folder on your Mac — then notifies you on your iPhone via iMessage when each file is queued, when transcription starts, and again when it's done.
 
 No third-party apps. No cloud services. Runs silently in the background and survives reboots.
 
@@ -15,13 +15,18 @@ Saves .mp3 to iCloud Drive folder  (e.g. Voice Memos or Files app)
     ↓
 iCloud syncs the file to your Mac
     ↓
-watcher.py detects the new file
+watcher.py detects the new file and adds it to the queue
+    ↓
+If other files are already waiting:
+    iMessage sent: "📋 File queued — Position 2 in queue"
+    ↓
+Worker picks up the file when it reaches the front of the queue
     ↓
 Waits for the file to fully download (handles slow connections gracefully)
     ↓
 Copies the file to /tmp (avoids transcribing directly from iCloud Drive)
     ↓
-iMessage sent: "🎙️ Transcription started — File: filename.mp3, Mode: Duo"
+iMessage sent: "🎙️ Transcription started — File: filename.mp3, Mode: Duo, 1 more waiting"
     ↓
 Runs transcribe.py on the local temp copy
     ↓
@@ -29,7 +34,7 @@ transcribe.py creates <filename>_transcript.txt
     ↓
 Transcript moved back next to the original .mp3 in iCloud Drive
     ↓
-iMessage sent: "✅ Transcription complete! File: filename.mp3"
+iMessage sent: "✅ Transcription complete! — 1 file still in queue"
 ```
 
 The watcher is registered as a **launchd agent** — macOS's native background service manager — so it starts at login, runs silently, and automatically restarts if anything goes wrong.
@@ -87,6 +92,20 @@ Just drop your `.mp3` into the appropriate subfolder and the watcher handles the
 
 ---
 
+## Queue Behaviour — Multiple Files
+
+Files are always processed **one at a time**, in the order they arrive. This is intentional: running multiple WhisperX jobs simultaneously on CPU would cause them to compete for resources, slow each other down, and produce worse results.
+
+When a new file arrives while another is already being transcribed:
+
+- You immediately receive a **"📋 File queued"** iMessage with its position in line.
+- The worker picks it up automatically as soon as the current job finishes — no action needed.
+- Every "started" and "completed" message includes how many files are still waiting, so you always know the full picture.
+
+Files longer than 4 hours should be run manually (see below) — the watcher enforces a 4-hour per-job limit as a safety net against hung processes.
+
+---
+
 ## Installation
 
 ### Step 1 — Copy files into your Transcribe directory
@@ -110,6 +129,7 @@ VENV_PYTHON  = "/Users/alamontagne/whisperx-env/bin/python3"
 SCRIPT_PATH  = os.path.join(WATCH_DIR, "transcribe.py")
 PHONE_NUMBER = "+15141234567"   # your phone number in international format
 TEMP_DIR     = "/tmp/transcribe_processing"
+JOB_TIMEOUT  = 14400            # 4 hours — increase if needed, or run longer files manually
 ```
 
 `PHONE_NUMBER` should be your phone number in international format (e.g. `+15141234567`). Sending to yourself works perfectly — it shows up in your own iMessage thread on iPhone.
@@ -134,7 +154,7 @@ cd /Users/alamontagne/Documents/Trancscribe
 /Users/alamontagne/whisperx-env/bin/python3 watcher.py
 ```
 
-Drop an `.mp3` into `solo/`, `duo/`, or `group/` and watch the output. You should receive two iMessages — one when transcription starts, and one when it completes.
+Drop an `.mp3` into `solo/`, `duo/`, or `group/` and watch the output. You should receive two iMessages — one when transcription starts, and one when it completes. Try dropping in a second file while the first is running to confirm the queuing behaviour.
 
 Press `Ctrl+C` to stop once confirmed.
 
@@ -160,6 +180,20 @@ The watcher is now running in the background and will start automatically at eve
 
 ---
 
+## Running Long Files Manually
+
+The watcher enforces a 4-hour job limit as a safety net. For recordings longer than that, run `transcribe.py` directly:
+
+```bash
+source ~/whisperx-env/bin/activate
+cd /Users/alamontagne/Documents/Trancscribe
+python3 transcribe.py /path/to/your/long-recording.mp3 2
+```
+
+The second argument is the speaker count (`1`, `2`, or omit for auto-detect) — the same logic the watcher applies based on subfolder.
+
+---
+
 ## Managing the Service
 
 ### Check if it's running
@@ -170,7 +204,7 @@ A PID in the first column means it's active. The middle number is the exit code 
 
 ### View live logs
 ```bash
-# Watcher activity
+# Watcher and queue activity
 tail -f /Users/alamontagne/Documents/Trancscribe/watcher.log
 
 # Startup errors
@@ -197,7 +231,7 @@ When iCloud syncs a file to your Mac, it can appear in Finder as a small **stub 
 `watcher.py` handles this with a two-stage approach:
 
 1. **Stability check** — polls the file size every 2 seconds, waits until it has been non-zero and unchanged for 15 consecutive seconds (confirming the download is complete). Timeout: 3 minutes.
-2. **Materialisation** — attempts to read the first 4 KB of the file, which forces iCloud to fully flush it to local disk.
+2. **Materialisation** — reads the first 4 KB of the file, which forces iCloud to fully flush it to local disk.
 3. **Local copy** — copies the file to `/tmp/transcribe_processing/` before transcribing. This avoids any mid-transcription iCloud interference and ensures the temp file is cleaned up regardless of outcome.
 
 The final transcript is always moved back to sit next to the original `.mp3` in iCloud Drive.
@@ -210,10 +244,11 @@ All notifications are sent via **iMessage using `osascript`** — no third-party
 
 | Event | Message |
 |---|---|
-| Transcription started | `🎙️ Transcription started` with filename and speaker mode |
-| Success | `✅ Transcription complete!` with filename, mode, and transcript name |
+| File queued (behind others) | `📋 File queued` with filename, mode, and position in queue |
+| Transcription started | `🎙️ Transcription started` with filename, mode, and files still waiting |
+| Success | `✅ Transcription complete!` with filename, mode, transcript name, and files still waiting |
 | Timeout (iCloud) | `❌ iCloud sync timed out` — file never fully downloaded |
-| Timeout (processing) | `⏰ Transcription timed out` — job exceeded 30-minute limit |
+| Timeout (4-hour limit) | `⏰ Transcription timed out` — run this file manually |
 | HF_TOKEN missing | `❌ HF_TOKEN not set` — diarization cannot run |
 | Script error | `❌ Transcription failed` — check watcher.log |
 | Unexpected error | `❌ Unexpected error` — check watcher.log |
@@ -225,7 +260,7 @@ All notifications are sent via **iMessage using `osascript`** — no third-party
 ```
 Trancscribe/
 ├── transcribe.py                               ← transcription script
-├── watcher.py                                  ← file watcher + notification logic
+├── watcher.py                                  ← file watcher + queue + notification logic
 ├── com.alamontagne.transcribe-watcher.plist    ← launchd service definition
 ├── watcher.log                                 ← auto-created: activity log
 ├── solo/
@@ -246,6 +281,7 @@ Trancscribe/
 | No iMessage received | `System Settings → Privacy & Security → Automation → Terminal → Messages` |
 | HF_TOKEN errors | Confirm the token in the plist starts with `hf_` and is valid |
 | iCloud file keeps timing out | Increase `timeout=` in `wait_for_file_ready()` (default: 180 s) |
+| File over 4 hours timed out | Run it manually — see "Running Long Files Manually" above |
 | Two files with the same name processed incorrectly | Already handled — dedup is keyed on the full absolute path, not just the filename |
 
 ---
