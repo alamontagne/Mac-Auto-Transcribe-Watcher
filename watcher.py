@@ -11,7 +11,7 @@ from watchdog.events import FileSystemEventHandler
 WATCH_DIR = "/Users/alamontagne/Documents/Trancscribe"
 VENV_PYTHON = "/Users/alamontagne/whisperx-env/bin/python3"
 SCRIPT_PATH = os.path.join(WATCH_DIR, "transcribe.py")
-PHONE_NUMBER = "+1xxxxxxxxxx"
+PHONE_NUMBER = "+14163000385"
 TEMP_DIR = "/tmp/transcribe_processing"
 # ========================================================
 
@@ -108,27 +108,24 @@ def force_materialize(file_path, max_attempts=40):
     return False
 
 
-def drain_process(process, timeout=1800):
+JOB_TIMEOUT = 14400  # 4 hours — kills only a genuinely hung process; run longer files manually
+
+def drain_process(process, deadline):
     """
-    Read stdout line-by-line (so logs stream in real time) while also
-    enforcing an overall wall-clock timeout.  Returns the exit code or
-    raises subprocess.TimeoutExpired if the deadline is exceeded.
+    Read stdout line-by-line in real time while enforcing a 4-hour wall-clock
+    limit (set at Popen time, passed in as a deadline). Sufficient for any
+    meeting-length recording; longer files should be run manually.
     """
-    deadline = time.time() + timeout
-    lines = []
     while True:
         remaining = deadline - time.time()
         if remaining <= 0:
             process.kill()
-            raise subprocess.TimeoutExpired(process.args, timeout)
-        # readline() with a 1-second spin so we can check the deadline
+            raise subprocess.TimeoutExpired(process.args, JOB_TIMEOUT)
         line = process.stdout.readline()
         if line:
-            stripped = line.strip()
-            logging.info(f"TRANSCRIBE: {stripped}")
-            lines.append(stripped)
+            logging.info(f"TRANSCRIBE: {line.strip()}")
         elif process.poll() is not None:
-            # Process finished; drain any remaining output
+            # Process finished — drain any remaining buffered output
             for extra in process.stdout:
                 logging.info(f"TRANSCRIBE: {extra.strip()}")
             break
@@ -200,7 +197,8 @@ class MP3Handler(FileSystemEventHandler):
                 send_imessage(f"❌ HF_TOKEN not set. Transcription cannot start for:\n{filename}")
                 return
 
-            logging.info("Launching transcription subprocess (30-minute limit)...")
+            logging.info("Launching transcription subprocess (4-hour limit)...")
+            deadline = time.time() + JOB_TIMEOUT
             process = subprocess.Popen(
                 [VENV_PYTHON, SCRIPT_PATH, temp_path, str(num_speakers)],
                 cwd=WATCH_DIR,
@@ -211,7 +209,7 @@ class MP3Handler(FileSystemEventHandler):
                 bufsize=1
             )
 
-            returncode = drain_process(process, timeout=1800)
+            returncode = drain_process(process, deadline=deadline)
 
             # Move transcript back next to the original iCloud file
             temp_transcript = os.path.splitext(temp_path)[0] + "_transcript.txt"
@@ -237,12 +235,26 @@ class MP3Handler(FileSystemEventHandler):
                 logging.error(f"Transcription process exited with code {returncode}")
 
         except subprocess.TimeoutExpired:
-            logging.error("Transcription timed out after 30 minutes")
-            send_imessage(
-                f"⏰ Transcription timed out\n\n"
-                f"File: {filename}\n\n"
-                f"The job took longer than 30 minutes and was cancelled."
-            )
+            logging.error("Transcription hit the 4-hour limit — process killed")
+            # Unlikely but possible: check if the transcript was written before the kill
+            temp_transcript = os.path.splitext(temp_path)[0] + "_transcript.txt"
+            final_transcript = os.path.splitext(audio_path)[0] + "_transcript.txt"
+            if os.path.exists(temp_transcript):
+                shutil.move(temp_transcript, final_transcript)
+                logging.info("Transcript found after timeout — moved successfully")
+                send_imessage(
+                    f"✅ Transcription complete!\n\n"
+                    f"File: {filename}\n"
+                    f"Mode: {mode_label}\n"
+                    f"Transcript: {os.path.basename(final_transcript)}\n\n"
+                    f"(Note: ran right up to the 4-hour limit.)"
+                )
+            else:
+                send_imessage(
+                    f"⏰ Transcription timed out\n\n"
+                    f"File: {filename}\n\n"
+                    f"Exceeded the 4-hour limit. Run this file manually if needed."
+                )
         except Exception as e:
             logging.error(f"Unexpected error processing {filename}: {e}", exc_info=True)
             send_imessage(f"❌ Unexpected error\n\nFile: {filename}\n\nCheck watcher.log for details.")
