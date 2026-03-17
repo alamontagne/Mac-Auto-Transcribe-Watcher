@@ -1,50 +1,55 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!--
-  com.alamontagne.transcribewatcher.plist
-  ───────────────────────────────────────
-  launchd agent that keeps watcher.py running at all times.
-  • Starts automatically when you log in (RunAtLoad)
-  • Restarts automatically if it crashes (KeepAlive)
-  • Logs stdout/stderr to the Trancscribe directory
-
-  Installation:
-    cp com.alamontagne.transcribewatcher.plist ~/Library/LaunchAgents/
-    launchctl load ~/Library/LaunchAgents/com.alamontagne.transcribewatcher.plist
-
-  To stop:
-    launchctl unload ~/Library/LaunchAgents/com.alamontagne.transcribewatcher.plist
--->
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
 
-    <!-- Unique identifier for this agent -->
+    <!-- Unique identifier — must match the filename (without .plist) -->
     <key>Label</key>
-    <string>com.alamontagne.transcribewatcher</string>
+    <string>com.alamontagne.transcribe-watcher</string>
 
-    <!-- Command to run: python3 /path/to/watcher.py -->
+    <!-- The command to run -->
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
+        <string>/Users/alamontagne/whisperx-env/bin/python3</string>
         <string>/Users/alamontagne/Documents/Trancscribe/watcher.py</string>
     </array>
 
-    <!-- Start the watcher as soon as you log in -->
-    <key>RunAtLoad</key>
-    <true/>
+    <!-- Working directory -->
+    <key>WorkingDirectory</key>
+    <string>/Users/alamontagne/Documents/Trancscribe</string>
 
-    <!-- Restart automatically if the process exits or crashes -->
+    <!-- Environment variables available to the process.
+         Add your real HF token value here so the watcher always has it,
+         even if ~/.zshrc hasn't been sourced. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/alamontagne</string>
+        <!-- IMPORTANT: replace the value below with your actual HF token -->
+        <key>HF_TOKEN</key>
+        <string>hf_enter-key-here</string>
+    </dict>
+
+    <!-- Restart automatically if it crashes -->
     <key>KeepAlive</key>
     <true/>
 
-    <!-- Log normal output to a file in the watched directory -->
-    <key>StandardOutPath</key>
-    <string>/Users/alamontagne/Documents/Trancscribe/watcher.log</string>
+    <!-- Start on login -->
+    <key>RunAtLoad</key>
+    <true/>
 
-    <!-- Log errors to a separate file -->
+    <!-- Log files — tailed with: tail -f ~/Library/Logs/transcribe-watcher.out -->
+    <key>StandardOutPath</key>
+    <string>/Users/alamontagne/Library/Logs/transcribe-watcher.out</string>
     <key>StandardErrorPath</key>
-    <string>/Users/alamontagne/Documents/Trancscribe/watcher.err</string>
+    <string>/Users/alamontagne/Library/Logs/transcribe-watcher.err</string>
+
+    <!-- Throttle restarts — don't spin-loop if it keeps crashing -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
 
 </dict>
 </plist>
