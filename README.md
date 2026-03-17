@@ -1,6 +1,6 @@
 # 🎙️ Auto-Transcribe Watcher
 
-Automatically transcribes `.mp3` files the moment they finish syncing to a local iCloud-connected folder on your Mac — then notifies you on your iPhone via iMessage when the transcription is done.
+Automatically transcribes `.mp3` files the moment they finish syncing to a local iCloud-connected folder on your Mac — then notifies you on your iPhone via iMessage when transcription starts and again when it's done.
 
 No third-party apps. No cloud services. Runs silently in the background and survives reboots.
 
@@ -19,11 +19,17 @@ watcher.py detects the new file
     ↓
 Waits for the file to fully download (handles slow connections gracefully)
     ↓
-Runs transcribe.py <filename.mp3>
+Copies the file to /tmp (avoids transcribing directly from iCloud Drive)
     ↓
-transcribe.py creates <filename.txt>  ← see apple-silicon-transcribe below
+iMessage sent: "🎙️ Transcription started — File: filename.mp3, Mode: Duo"
     ↓
-iMessage sent to your iPhone: "✅ Transcription complete: filename.txt"
+Runs transcribe.py on the local temp copy
+    ↓
+transcribe.py creates <filename>_transcript.txt
+    ↓
+Transcript moved back next to the original .mp3 in iCloud Drive
+    ↓
+iMessage sent: "✅ Transcription complete! File: filename.mp3"
 ```
 
 The watcher is registered as a **launchd agent** — macOS's native background service manager — so it starts at login, runs silently, and automatically restarts if anything goes wrong.
@@ -33,31 +39,51 @@ The watcher is registered as a **launchd agent** — macOS's native background s
 ## Prerequisites
 
 ### 1. Transcription script
-This watcher is designed to work alongside [apple-silicon-transcribe](https://github.com/alamontagne/apple-silicon-transcribe), which handles the actual speech-to-text using Whisper optimised for Apple Silicon.
+This watcher is designed to work alongside [apple-silicon-transcribe](https://github.com/alamontagne/apple-silicon-transcribe), which handles the actual speech-to-text using WhisperX with speaker diarization.
 
 Make sure `transcribe.py` is set up and working before proceeding. Test it manually first:
 
 ```bash
 cd /Users/alamontagne/Documents/Trancscribe
-python3 transcribe.py your-audio-file.mp3
+/Users/alamontagne/whisperx-env/bin/python3 transcribe.py your-audio-file.mp3
 ```
 
-If that produces a `.txt` file, you're ready.
+If that produces a `_transcript.txt` file, you're ready.
 
-### 2. Python 3
-Comes pre-installed on macOS. Verify with:
-```bash
-python3 --version
-```
+### 2. Python 3 (in a virtual environment)
+The watcher uses the Python interpreter from the `whisperx-env` virtual environment. See [apple-silicon-transcribe](https://github.com/alamontagne/apple-silicon-transcribe) for setup instructions.
 
 ### 3. watchdog library
-Install the `watchdog` Python library — this is the only external dependency:
+Install `watchdog` into your virtual environment:
 ```bash
-pip3 install watchdog
+source ~/whisperx-env/bin/activate
+pip install watchdog
 ```
 
 > **What is watchdog?**  
-> `watchdog` is a Python library that listens to the macOS file system for changes — specifically, new files appearing in a folder. It's far more efficient than polling the directory in a loop. It uses macOS's native `FSEvents` API under the hood.
+> A Python library that listens to the macOS file system for changes using the native `FSEvents` API. Far more efficient than polling a directory in a loop.
+
+---
+
+## Folder Structure — Speaker Modes
+
+The watcher reads the **subfolder** an MP3 lands in to determine how many speakers to tell pyannote to expect. This directly improves diarization accuracy.
+
+```
+/Users/alamontagne/Documents/Trancscribe/
+    solo/      ← 1 speaker  (monologue, voicemail, lecture)
+    duo/       ← 2 speakers (interview, phone call, podcast)
+    group/     ← 3+ speakers, auto-detected by pyannote
+```
+
+Create these once:
+```bash
+mkdir -p "/Users/alamontagne/Documents/Trancscribe/solo"
+mkdir -p "/Users/alamontagne/Documents/Trancscribe/duo"
+mkdir -p "/Users/alamontagne/Documents/Trancscribe/group"
+```
+
+Just drop your `.mp3` into the appropriate subfolder and the watcher handles the rest.
 
 ---
 
@@ -69,65 +95,68 @@ Place both files in `/Users/alamontagne/Documents/Trancscribe/`:
 
 ```
 /Users/alamontagne/Documents/Trancscribe/
-├── transcribe.py          ← from apple-silicon-transcribe
-├── watcher.py             ← from this repo
-└── com.alamontagne.transcribewatcher.plist  ← from this repo
+├── transcribe.py                               ← from apple-silicon-transcribe
+├── watcher.py                                  ← this repo
+└── com.alamontagne.transcribe-watcher.plist    ← this repo
 ```
 
 ### Step 2 — Edit `watcher.py` configuration
 
-Open `watcher.py` and update the three config values near the top:
+Open `watcher.py` and update the config block near the top:
 
 ```python
 WATCH_DIR    = "/Users/alamontagne/Documents/Trancscribe"  # path to your folder
-SCRIPT       = "/Users/alamontagne/Documents/Trancscribe/transcribe.py"
-IMESSAGE_TO  = "your@apple-id.com"   # your Apple ID email or phone number
+VENV_PYTHON  = "/Users/alamontagne/whisperx-env/bin/python3"
+SCRIPT_PATH  = os.path.join(WATCH_DIR, "transcribe.py")
+PHONE_NUMBER = "+15141234567"   # your phone number in international format
+TEMP_DIR     = "/tmp/transcribe_processing"
 ```
 
-`IMESSAGE_TO` can be your Apple ID email address or your phone number in international format (e.g. `+15141234567`). Sending a message to yourself works perfectly — it shows up in your own iMessage thread on iPhone.
+`PHONE_NUMBER` should be your phone number in international format (e.g. `+15141234567`). Sending to yourself works perfectly — it shows up in your own iMessage thread on iPhone.
 
-### Step 3 — Test the watcher manually
+### Step 3 — Edit the plist — add your HuggingFace token
 
-Before registering it as a background service, run it directly in a terminal to make sure everything works:
+Open `com.alamontagne.transcribe-watcher.plist` and replace the placeholder with your actual HF token:
+
+```xml
+<key>HF_TOKEN</key>
+<string>hf_REPLACE_WITH_YOUR_TOKEN</string>
+```
+
+Your token is at https://huggingface.co/settings/tokens. This ensures the token is always available to the background service even when your shell profile hasn't been sourced.
+
+### Step 4 — Test the watcher manually
+
+Before registering it as a background service, run it directly in a terminal:
 
 ```bash
 cd /Users/alamontagne/Documents/Trancscribe
-python3 watcher.py
+/Users/alamontagne/whisperx-env/bin/python3 watcher.py
 ```
 
-Drop an `.mp3` into the folder (or copy one from iCloud) and watch the terminal output. You should see:
-```
-[Watcher] New MP3 detected: my-recording.mp3
-[Watcher] Waiting for iCloud download to complete…
-[Watcher] File ready (2048000 bytes): my-recording.mp3
-[Watcher] Starting transcription: my-recording.mp3
-[Watcher] ✅ Transcription complete: my-recording.txt
-[iMessage] Sent: ✅ Transcription complete: my-recording.txt
-```
+Drop an `.mp3` into `solo/`, `duo/`, or `group/` and watch the output. You should receive two iMessages — one when transcription starts, and one when it completes.
 
-Press `Ctrl+C` to stop once you've confirmed it works.
+Press `Ctrl+C` to stop once confirmed.
 
-### Step 4 — Grant Automation permission (first-time only)
+### Step 5 — Grant Automation permission (first-time only)
 
 When `watcher.py` sends its first iMessage via `osascript`, macOS will show a permission prompt:
 
 > *"Terminal" wants to control "Messages".*
 
-Click **OK**. This only happens once. If you miss it, go to:  
+Click **OK**. This only happens once. If you miss it:  
 `System Settings → Privacy & Security → Automation → Terminal → Messages ✓`
 
-### Step 5 — Register as a launchd background service
-
-Copy the plist to the LaunchAgents folder and load it:
+### Step 6 — Register as a launchd background service
 
 ```bash
-cp /Users/alamontagne/Documents/Trancscribe/com.alamontagne.transcribewatcher.plist \
+cp /Users/alamontagne/Documents/Trancscribe/com.alamontagne.transcribe-watcher.plist \
    ~/Library/LaunchAgents/
 
-launchctl load ~/Library/LaunchAgents/com.alamontagne.transcribewatcher.plist
+launchctl load ~/Library/LaunchAgents/com.alamontagne.transcribe-watcher.plist
 ```
 
-The watcher is now running in the background. It will start automatically every time you log in.
+The watcher is now running in the background and will start automatically at every login.
 
 ---
 
@@ -135,57 +164,59 @@ The watcher is now running in the background. It will start automatically every 
 
 ### Check if it's running
 ```bash
-launchctl list | grep transcribewatcher
+launchctl list | grep transcribe-watcher
 ```
-A PID number in the first column means it's active.
+A PID in the first column means it's active. The middle number is the exit code — `0` means running cleanly.
 
 ### View live logs
 ```bash
-# Normal output
+# Watcher activity
 tail -f /Users/alamontagne/Documents/Trancscribe/watcher.log
 
-# Errors (if any)
-tail -f /Users/alamontagne/Documents/Trancscribe/watcher.err
+# Startup errors
+tail -f ~/Library/Logs/transcribe-watcher.err
 ```
 
-### Restart after making changes to watcher.py
+### Reload after making changes
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.alamontagne.transcribewatcher.plist
-launchctl load   ~/Library/LaunchAgents/com.alamontagne.transcribewatcher.plist
+launchctl unload ~/Library/LaunchAgents/com.alamontagne.transcribe-watcher.plist
+launchctl load   ~/Library/LaunchAgents/com.alamontagne.transcribe-watcher.plist
 ```
 
 ### Stop permanently
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.alamontagne.transcribewatcher.plist
+launchctl unload ~/Library/LaunchAgents/com.alamontagne.transcribe-watcher.plist
 ```
 
 ---
 
-## iCloud Timing — Why We Wait
+## iCloud Handling — Why We Copy to /tmp
 
-When iCloud syncs a file to your Mac, the file can appear in Finder (and to the file system) as a tiny **stub placeholder** before the full content has downloaded. On a slow connection from your iPhone, this gap can be several minutes.
+When iCloud syncs a file to your Mac, it can appear in Finder as a small **stub placeholder** before the full content has downloaded. Attempting to transcribe a stub produces garbage output or an outright error.
 
-`watcher.py` handles this automatically:
+`watcher.py` handles this with a two-stage approach:
 
-- It detects the new file immediately
-- It **polls the file size every second**
-- It only proceeds once the file size has been **non-zero and unchanged for 5 consecutive seconds**
-- It will wait up to **10 minutes** before timing out and sending a failure notification
+1. **Stability check** — polls the file size every 2 seconds, waits until it has been non-zero and unchanged for 15 consecutive seconds (confirming the download is complete). Timeout: 3 minutes.
+2. **Materialisation** — attempts to read the first 4 KB of the file, which forces iCloud to fully flush it to local disk.
+3. **Local copy** — copies the file to `/tmp/transcribe_processing/` before transcribing. This avoids any mid-transcription iCloud interference and ensures the temp file is cleaned up regardless of outcome.
 
-This means it works correctly whether you're on the same WiFi network or uploading remotely over cellular.
+The final transcript is always moved back to sit next to the original `.mp3` in iCloud Drive.
 
 ---
 
 ## Notifications
 
-Notifications are sent via **iMessage using `osascript`** — Apple's built-in scripting bridge. No third-party services, accounts, or apps required. Messages.app must be signed in on the Mac (it almost certainly is).
+All notifications are sent via **iMessage using `osascript`** — no third-party services required. Messages.app must be signed in on the Mac.
 
 | Event | Message |
-|-------|---------|
-| Success | `✅ Transcription complete: filename.txt` |
-| Timeout | `⚠️ Timed out waiting for filename.mp3 to download from iCloud.` |
-| Script error | `❌ Transcription failed for filename.mp3: <error details>` |
-| Watcher exception | `❌ Watcher exception on filename.mp3: <error details>` |
+|---|---|
+| Transcription started | `🎙️ Transcription started` with filename and speaker mode |
+| Success | `✅ Transcription complete!` with filename, mode, and transcript name |
+| Timeout (iCloud) | `❌ iCloud sync timed out` — file never fully downloaded |
+| Timeout (processing) | `⏰ Transcription timed out` — job exceeded 30-minute limit |
+| HF_TOKEN missing | `❌ HF_TOKEN not set` — diarization cannot run |
+| Script error | `❌ Transcription failed` — check watcher.log |
+| Unexpected error | `❌ Unexpected error` — check watcher.log |
 
 ---
 
@@ -193,35 +224,34 @@ Notifications are sent via **iMessage using `osascript`** — Apple's built-in s
 
 ```
 Trancscribe/
-├── transcribe.py                          ← transcription script (apple-silicon-transcribe)
-├── watcher.py                             ← this repo: file watcher + notification logic
-├── com.alamontagne.transcribewatcher.plist ← this repo: launchd service definition
-├── watcher.log                            ← auto-created: normal output log
-├── watcher.err                            ← auto-created: error log
-├── 2026-03-09_12_01_38.mp3               ← example: uploaded from iPhone
-└── 2026-03-09_12_01_38.txt               ← example: auto-generated transcript
+├── transcribe.py                               ← transcription script
+├── watcher.py                                  ← file watcher + notification logic
+├── com.alamontagne.transcribe-watcher.plist    ← launchd service definition
+├── watcher.log                                 ← auto-created: activity log
+├── solo/
+│   ├── interview.mp3                           ← dropped in by you
+│   └── interview_transcript.txt               ← auto-generated
+├── duo/
+└── group/
 ```
 
 ---
 
 ## Troubleshooting
 
-**The watcher isn't detecting files**  
-Run `launchctl list | grep transcribewatcher` — if there's no output, the service isn't loaded. Re-run the `launchctl load` command.
-
-**iMessage isn't sending**  
-Check `System Settings → Privacy & Security → Automation → Terminal → Messages`. Make sure the toggle is on.
-
-**Transcription runs but produces an error**  
-Check `watcher.err` for details. Also try running `transcribe.py` manually to isolate whether the issue is with the watcher or the transcription script itself.
-
-**The file times out waiting for iCloud**  
-The default timeout is 10 minutes. For very large files on slow connections, you can increase `timeout` in the `wait_until_complete()` function inside `watcher.py`.
+| Symptom | Where to look / what to do |
+|---|---|
+| Watcher not starting at login | `~/Library/Logs/transcribe-watcher.err` |
+| File detected but transcription fails | `watcher.log` in the watch directory |
+| No iMessage received | `System Settings → Privacy & Security → Automation → Terminal → Messages` |
+| HF_TOKEN errors | Confirm the token in the plist starts with `hf_` and is valid |
+| iCloud file keeps timing out | Increase `timeout=` in `wait_for_file_ready()` (default: 180 s) |
+| Two files with the same name processed incorrectly | Already handled — dedup is keyed on the full absolute path, not just the filename |
 
 ---
 
 ## Related
 
-- [apple-silicon-transcribe](https://github.com/alamontagne/apple-silicon-transcribe) — the Whisper-based transcription script this watcher is built around
+- [apple-silicon-transcribe](https://github.com/alamontagne/apple-silicon-transcribe) — the WhisperX-based transcription script this watcher is built around
 - [watchdog documentation](https://python-watchdog.readthedocs.io/) — Python file system events library
 - [launchd reference](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html) — Apple's background service documentation
